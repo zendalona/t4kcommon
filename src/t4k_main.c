@@ -24,11 +24,19 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 
 
+#include <stdio.h>
+#include <stdlib.h>
 #include "t4k_common.h"
 #include "t4k_globals.h"
 
-#ifdef HAVE_LIBSDL_NET
-#include "SDL_net.h"
+#if defined(HAVE_LIBSDL_NET) && HAVE_LIBSDL_NET
+#if __has_include(<SDL3_net/SDL_net.h>)
+#include <SDL3_net/SDL_net.h>
+#define T4K_HAS_SDL3_NET 1
+#elif __has_include(<SDL3/SDL_net.h>)
+#include <SDL3/SDL_net.h>
+#define T4K_HAS_SDL3_NET 1
+#endif
 #endif
 
 int debug_status;
@@ -74,11 +82,11 @@ int InitT4KCommon(int debug_flags)
 	return 0;
     }
 
-#ifdef HAVE_LIBSDL_NET
+#if defined(T4K_HAS_SDL3_NET) && T4K_HAS_SDL3_NET
     /* Networking: */
-    if (SDLNet_Init() < 0)
+    if (!NET_Init())
     {
-        fprintf(stderr, "SDLNet_Init: %s\n", SDLNet_GetError());
+        fprintf(stderr, "NET_Init: %s\n", SDL_GetError());
 	return 0;
     }
 #endif
@@ -93,40 +101,39 @@ int InitT4KCommon(int debug_flags)
 
 void CleanupT4KCommon(void)
 {
-    int frequency, channels, n_timesopened;
-    Uint16 format;
-
-    // Close the audio mixer. We have to do this at least as many times
-    // as it was opened.
-    n_timesopened = Mix_QuerySpec(&frequency, &format, &channels);
-    while (n_timesopened)
-    {
-	Mix_CloseAudio();
-	n_timesopened--;
-    }
+    // Close the audio mixer.
+    Mix_CloseAudio();
     
     T4K_UnloadMenus();
     // Unload SDL_Pango or SDL_ttf:
     T4K_Cleanup_SDL_Text();
     
-#ifdef HAVE_LIBSDL_NET
+#if defined(T4K_HAS_SDL3_NET) && T4K_HAS_SDL3_NET
     /* Quit networking if appropriate: */
-    SDLNet_Quit();
+    NET_Quit();
 #endif
 
     // Finally, quit SDL
     SDL_Quit();
 }
 
+static AccessibilityCallback tts_toggle_callback = NULL;
+static AccessibilityCallback braille_toggle_callback = NULL;
+
+void T4K_OnAccessibilityToggle(AccessibilityCallback tts_cb, AccessibilityCallback braille_cb)
+{
+    tts_toggle_callback = tts_cb;
+    braille_toggle_callback = braille_cb;
+}
 
 int T4K_HandleStdEvents (const SDL_Event* event)
 {
     int ret = 0;
 
-    if (event->type != SDL_KEYDOWN)
+    if (event->type != SDL_EVENT_KEY_DOWN)
 	return 0;
 
-    SDLKey key = event->key.keysym.sym;
+    SDL_Keycode key = event->key.key;
 
     /* Toggle screen mode: */
     if (key == SDLK_F10)
@@ -144,6 +151,17 @@ int T4K_HandleStdEvents (const SDL_Event* event)
 	T4K_AudioToggle();
     }
 #endif
+
+    /* Toggle Accessibility (do NOT set ret=1; returning 1 causes
+       T4K_RunMenu to exit the menu, which is not desired for toggles): */
+    else if (key == SDLK_F5 && tts_toggle_callback)
+    {
+        tts_toggle_callback();
+    }
+    else if (key == SDLK_F9 && braille_toggle_callback)
+    {
+        braille_toggle_callback();
+    }
 
     return ret;
 }

@@ -17,9 +17,11 @@ find_package(LibXml2 REQUIRED)
 
 #Look here for headers
 include_directories(
-    ${SDL_INCLUDE_DIR}
-    ${SDLIMAGE_INCLUDE_DIR}
-    ${SDLMIXER_INCLUDE_DIR}
+    ${SDL3_INCLUDE_DIRS}
+    ${SDL3_IMAGE_INCLUDE_DIRS}
+    ${SDL3_TTF_INCLUDE_DIRS}
+    ${SDL3_MIXER_INCLUDE_DIRS}
+    ${SDL3_NET_INCLUDE_DIRS}
     ${LIBXML2_INCLUDE_DIR}
     ${CMAKE_SOURCE_DIR}/gettext
     ${CMAKE_BINARY_DIR}
@@ -28,6 +30,8 @@ include_directories(
     ${CMAKE_BINARY_DIR}/src/linebreak
     ${CMAKE_SOURCE_DIR}/src/linebreak
     )
+
+link_directories(/usr/local/lib)
 
 #Look here for optional headers
 t4k_include_directory(SDLPANGO)
@@ -55,17 +59,34 @@ endif()
 
 #Depend on these libraries. For Pango or TTF, whichever is found will be used
 target_link_libraries(${LIB_NAME}
-    ${SDL_LIBRARY}
-    ${SDLMIXER_LIBRARY}
-    ${SDLIMAGE_LIBRARY}
-    ${SDLPANGO_LIBRARY}
-    ${SDLTTF_LIBRARY}
+    PkgConfig::SDL3
+    PkgConfig::SDL3_IMAGE
+    PkgConfig::SDL3_TTF
+    PkgConfig::SDL3_MIXER
     ${LIBXML2_LIBRARIES}
     ${LINEBREAK_BINARY_DIR}/liblinebreak.a
     )
 
+if(SDL3_NET_FOUND)
+    link_directories(${SDL3_NET_LIBRARY_DIRS})
+    target_link_libraries(${LIB_NAME} ${SDL3_NET_LIBRARIES})
+endif()
+
+if(WITH_ESPEAK)
+    if(WITH_ESPEAK_NG)
+        include_directories(${ESPEAK_NG_INCLUDE_DIRS})
+        target_link_libraries(${LIB_NAME} ${ESPEAK_NG_LIBRARIES})
+        add_definitions(-DWITH_ESPEAK=1 -DWITH_ESPEAK_NG=1)
+    else()
+        include_directories(${ESPEAK_INCLUDE_DIRS})
+        target_link_libraries(${LIB_NAME} ${ESPEAK_LIBRARIES})
+        add_definitions(-DWITH_ESPEAK=1 -DWITH_ESPEAK_NG=0)
+    endif()
+endif()
+
 t4k_include_definition(HAVE_LIBSDL_PANGO)
 t4k_include_definition(HAVE_LIBPNG)
+t4k_include_definition(HAVE_LIBSDL_NET)
 set_target_properties (${LIB_NAME} PROPERTIES 
     COMPILE_FLAGS "${_rsvg_def} ${_pango_def} ${_rsvg_cflags} ${_cairo_cflags}"
     COMPILE_DEFINITIONS
@@ -80,6 +101,8 @@ install( TARGETS ${LIB_NAME}
 install(FILES ${T4K_COMMON_SOURCE_DIR}/t4k_common.h
     ${T4K_COMMON_SOURCE_DIR}/t4k_alphasort.h
     ${T4K_COMMON_SOURCE_DIR}/t4k_scandir.h
+    ${T4K_COMMON_SOURCE_DIR}/t4k_globals.h
+    ${T4K_COMMON_SOURCE_DIR}/t4k_compiler.h
     DESTINATION include)
 
 include(UseDoxygen OPTIONAL)
@@ -92,12 +115,10 @@ set(T4K_TESTAPP t4k_test)
 add_executable(${T4K_TESTAPP} ${T4K_TEST_SOURCES})
 TARGET_LINK_LIBRARIES(${T4K_TESTAPP}
     ${LIB_NAME}
-    ${SDL_LIBRARY}
-    ${SDLMIX_LIBRARY}
-    ${SDLIMAGE_LIBRARY}
-    ${SDLNET_LIBRARY}
-    ${SDLPANGO_LIBRARY}
-    ${SDLTTF_LIBRARY}
+    PkgConfig::SDL3
+    PkgConfig::SDL3_IMAGE
+    PkgConfig::SDL3_TTF
+    PkgConfig::SDL3_MIXER
     ${LIBXML2_LIBRARIES}
     ${RSVG_LIBRARIES}
     ${LINEBREAK_BINARY_DIR}/liblinebreak.a

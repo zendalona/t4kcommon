@@ -28,11 +28,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "t4k_common.h"
 #include "t4k_globals.h"
 
 SDL_Surface* screen = NULL;
+
+static SDL_Window*   sdl_window   = NULL;
+static SDL_Renderer* sdl_renderer = NULL;
 
 static ResSwitchCallback res_switch_callback = NULL;
 static ResSwitchCallback internal_res_switch_callback = NULL;
@@ -60,17 +65,47 @@ const char* T4K_AskFontName()
 
 /*
    Return a pointer to the screen we're using, as an alternative to making screen
-   global. Not sure what is involved performance-wise in SDL_GetVideoSurface,
-   or if this check is even necessary -Cheez
+   global. In SDL3, there is no SDL_GetVideoSurface(); screen is a software
+   render-target surface managed by this module.
    */
-SDL_Surface* T4K_GetScreen()
+SDL_Surface* T4K_GetScreen(void)
 {
-    if (screen != SDL_GetVideoSurface() )
-    {
-	fprintf(stderr, "Video Surface changed from outside of SDL_Extras!\n");
-	screen = SDL_GetVideoSurface();
-    }
     return screen;
+}
+
+SDL_Window* T4K_GetWindow(void)
+{
+    return sdl_window;
+}
+
+SDL_Renderer* T4K_GetRenderer(void)
+{
+    return sdl_renderer;
+}
+
+void T4K_SetWindowAndRenderer(SDL_Window* win, SDL_Renderer* ren)
+{
+    sdl_window = win;
+    sdl_renderer = ren;
+}
+
+/* Upload the software screen surface to a texture and present it.
+   This replaces SDL_Flip() and SDL_UpdateRect(screen,...) from SDL 1.2. */
+void T4K_PresentScreen(void)
+{
+    SDL_Renderer* r = sdl_renderer ? sdl_renderer : T4K_GetRenderer();
+    SDL_Surface* s = screen ? screen : T4K_GetScreen();
+    if (!r || !s)
+        return;
+
+    SDL_Texture* tex = SDL_CreateTextureFromSurface(r, s);
+    if (tex)
+    {
+        SDL_RenderClear(r);
+        SDL_RenderTexture(r, tex, NULL, NULL);
+        SDL_RenderPresent(r);
+        SDL_DestroyTexture(tex);
+    }
 }
 
 
@@ -125,16 +160,10 @@ void T4K_DrawButtonOn(SDL_Surface* target,
 SDL_Surface* T4K_CreateButton(int w, int h, int radius,
 	Uint8 r, Uint8 g, Uint8 b, Uint8 a)
 {
-    /* NOTE - we use a 32-bit temp surface even if we have a 16-bit */
-    /* screen - it gets converted during blitting.                  */
-    SDL_Surface* tmp_surf = SDL_CreateRGBSurface(SDL_SWSURFACE|SDL_SRCALPHA,
-	    w,
-	    h,
-	    32,
-	    rmask, gmask, bmask, amask);
+    SDL_Surface* tmp_surf = SDL_CreateSurface(w, h, SDL_PIXELFORMAT_RGBA32);
 
     Uint32 color = SDL_MapRGBA(tmp_surf->format, r, g, b, a);
-    SDL_FillRect(tmp_surf, NULL, color);
+    SDL_FillSurfaceRect(tmp_surf, NULL, color);
     T4K_RoundCorners(tmp_surf, radius);
     return tmp_surf;
 }
@@ -153,7 +182,10 @@ void T4K_RoundCorners(SDL_Surface* s, Uint16 radius)
     if (SDL_LockSurface(s) == -1)
 	return;
 
-    bytes_per_pix = s->format->BytesPerPixel;
+    const SDL_PixelFormatDetails *details = SDL_GetPixelFormatDetails(s->format);
+    if (!details)
+	return;
+    bytes_per_pix = details->bytes_per_pixel;
     if (bytes_per_pix != 4)
 	return;
 
@@ -163,8 +195,7 @@ void T4K_RoundCorners(SDL_Surface* s, Uint16 radius)
     if (radius > (s->h)/2)
 	radius = (s->h)/2;
 
-
-    alpha_mask = s->format->Amask;
+    alpha_mask = details->Amask;
 
     /* Now round off corners: */
     /* upper left:            */
@@ -250,31 +281,11 @@ note: you can have it flip both
 SDL_Surface* T4K_Flip( SDL_Surface *in, int x, int y ) {
     SDL_Surface *out, *tmp;
     SDL_Rect from_rect, to_rect;
-    Uint32        flags;
-    Uint32  colorkey=0;
+    Uint32 colorkey = 0;
+    bool has_colorkey = SDL_GetSurfaceColorKey(in, &colorkey);
 
-    /* --- grab the settings for the incoming pixmap --- */
-
-    SDL_LockSurface(in);
-    flags = in->flags;
-
-    /* --- change in's flags so ignore colorkey & alpha --- */
-
-    if (flags & SDL_SRCCOLORKEY) {
-	in->flags &= ~SDL_SRCCOLORKEY;
-	colorkey = in->format->colorkey;
-    }
-    if (flags & SDL_SRCALPHA) {
-	in->flags &= ~SDL_SRCALPHA;
-    }
-
-    SDL_UnlockSurface(in);
-
-    /* --- create our new surface --- */
-
-    out = SDL_CreateRGBSurface(
-	    SDL_SWSURFACE,
-	    in->w, in->h, 32, rmask, gmask, bmask, amask);
+    out = SDL_CreateSurface(in->w, in->h, SDL_PIXELFORMAT_RGBA32);
+    if (!out) return NULL;
 
     /* --- flip horizontally if requested --- */
 
@@ -310,28 +321,17 @@ SDL_Surface* T4K_Flip( SDL_Surface *in, int x, int y ) {
 
     /* --- restore colorkey & alpha on in and setup out the same --- */
 
-    SDL_LockSurface(in);
-
-    if (flags & SDL_SRCCOLORKEY) {
-	in->flags |= SDL_SRCCOLORKEY;
-	in->format->colorkey = colorkey;
-	tmp = SDL_DisplayFormat(out);
+    if (has_colorkey) {
+	SDL_SetSurfaceColorKey(in, true, colorkey);
+	tmp = SDL_ConvertSurface(out, SDL_PIXELFORMAT_RGBA32);
 	SDL_FreeSurface(out);
 	out = tmp;
-	out->flags |= SDL_SRCCOLORKEY;
-	out->format->colorkey = colorkey;
-    } else if (flags & SDL_SRCALPHA) {
-	in->flags |= SDL_SRCALPHA;
-	tmp = SDL_DisplayFormatAlpha(out);
-	SDL_FreeSurface(out);
-	out = tmp;
+	SDL_SetSurfaceColorKey(out, true, colorkey);
     } else {
-	tmp = SDL_DisplayFormat(out);
+	tmp = SDL_ConvertSurface(out, SDL_PIXELFORMAT_RGBA32);
 	SDL_FreeSurface(out);
 	out = tmp;
     }
-
-    SDL_UnlockSurface(in);
 
     return out;
 }
@@ -345,7 +345,7 @@ SDL_Surface* T4K_Flip( SDL_Surface *in, int x, int y ) {
    generalized to other image types. */
 SDL_Surface* T4K_Blend(SDL_Surface *S1, SDL_Surface *S2, float gamma)
 {
-    SDL_PixelFormat *fmt1, *fmt2;
+    SDL_PixelFormat fmt1, fmt2;
     Uint8 r1, r2, g1, g2, b1, b2, a1, a2;
     SDL_Surface *tmpS, *ret;
     Uint32 *cpix1, *epix1, *cpix2, *epix2;
@@ -354,29 +354,29 @@ SDL_Surface* T4K_Blend(SDL_Surface *S1, SDL_Surface *S2, float gamma)
     if (!S1)
 	return NULL;
 
-    fmt1 = fmt2 = NULL;
+    fmt1 = fmt2 = SDL_PIXELFORMAT_UNKNOWN;
     tmpS = ret = NULL;
 
     gamflip = 1.0 - gamma;
     if (gamma < 0 || gamflip < 0)
     {
-	perror("gamma must be between 0 and 1");
+	fprintf(stderr, "gamma must be between 0 and 1\n");
 	exit(0);
     }
 
     fmt1 = S1->format;
 
-    if (fmt1 && fmt1->BitsPerPixel != 32)
+    if (SDL_BITSPERPIXEL(fmt1) != 32)
     {
-	perror("This works only with RGBA images");
+	fprintf(stderr, "This works only with RGBA images\n");
 	return S1;
     }
     if (S2 != NULL)
     {
 	fmt2 = S2->format;
-	if (fmt2->BitsPerPixel != 32)
+	if (SDL_BITSPERPIXEL(fmt2) != 32)
 	{
-	    perror("This works only with RGBA images");
+	    fprintf(stderr, "This works only with RGBA images\n");
 	    return S1;
 	}
 	// Check that both images have the same width dimension
@@ -389,15 +389,15 @@ SDL_Surface* T4K_Blend(SDL_Surface *S1, SDL_Surface *S2, float gamma)
 	}
     }
 
-    tmpS = SDL_ConvertSurface(S1, fmt1, SDL_SWSURFACE);
+    tmpS = SDL_ConvertSurface(S1, fmt1);
     if (tmpS == NULL)
     {
-	perror("SDL_ConvertSurface() failed");
+	fprintf(stderr, "SDL_ConvertSurface() failed\n");
 	return S1;
     }
     if (-1 == SDL_LockSurface(tmpS))
     {
-	perror("SDL_LockSurface() failed");
+	fprintf(stderr, "SDL_LockSurface() failed\n");
 	return S1;
     }
 
@@ -440,7 +440,7 @@ SDL_Surface* T4K_Blend(SDL_Surface *S1, SDL_Surface *S2, float gamma)
     if (S2 != NULL)
 	SDL_UnlockSurface(S2);
 
-    ret = SDL_DisplayFormatAlpha(tmpS);
+    ret = SDL_ConvertSurface(tmpS, SDL_PIXELFORMAT_RGBA32);
     SDL_FreeSurface(tmpS);
 
     return ret;
@@ -469,7 +469,9 @@ int T4K_inRect( SDL_Rect r, int x, int y) {
 
 void T4K_UpdateRect(SDL_Surface* surf, SDL_Rect* rect)
 {
-    SDL_UpdateRect(surf, rect->x, rect->y, rect->w, rect->h);
+    (void)surf;
+    (void)rect;
+    T4K_PresentScreen();
 }
 
 void T4K_SetRect(SDL_Rect* rect, const float* pos)
@@ -483,67 +485,43 @@ void T4K_SetRect(SDL_Rect* rect, const float* pos)
 /* Darkens the screen by a factor of 2^bits */
 void T4K_DarkenScreen(Uint8 bits)
 {
-#if PIXEL_BITS == 32
-    Uint32* p;
-#elif PIXEL_BITS == 16
-    Uint16* p;
-#else
-    Uint16* p;
-    return;
-#endif
-    Uint32 rm = screen->format->Rmask;
-    Uint32 gm = screen->format->Gmask;
-    Uint32 bm = screen->format->Bmask;
-
-
-    int x, y;
-
-    /* (realistically, 1 and 2 are the only useful values) */
-    if (bits > 8)
-	return;
-
-    p = screen->pixels;
-
-    for (y = 0; y < screen->h; y++)
-    {
-	for (x = 0; x < screen->w; x++)
-	{
-	    *p = (((*p&rm)>>bits)&rm)
-		| (((*p&gm)>>bits)&gm)
-		| (((*p&bm)>>bits)&bm);
-	    p++;
-	}
+    if (!screen) return;
+    (void)bits;
+    SDL_Surface* dark = SDL_CreateSurface(screen->w, screen->h, SDL_PIXELFORMAT_RGBA32);
+    if (dark) {
+        SDL_FillSurfaceRect(dark, NULL, SDL_MapRGBA(dark->format, 0, 0, 0, 128));
+        SDL_BlitSurface(dark, NULL, screen, NULL);
+        SDL_DestroySurface(dark);
     }
 }
 
 /* change window size (works only in windowed mode) */
 void T4K_ChangeWindowSize(int new_res_x, int new_res_y)
 {
-    SDL_Surface* oldscreen = screen;
-
-    if(!(screen->flags & SDL_FULLSCREEN))
+    Uint32 wflags = SDL_GetWindowFlags(sdl_window);
+    if(!(wflags & SDL_WINDOW_FULLSCREEN))
     {
-	screen = SDL_SetVideoMode(new_res_x,
-		new_res_y,
-		PIXEL_BITS,
-		SDL_SWSURFACE|SDL_HWPALETTE);
+	SDL_SetWindowSize(sdl_window, new_res_x, new_res_y);
+
+	/* Recreate the software screen surface at the new size */
+	if (screen)
+	    SDL_DestroySurface(screen);
+	screen = SDL_CreateSurface(new_res_x, new_res_y, SDL_PIXELFORMAT_RGBA32);
 
 	if(screen == NULL)
 	{
 	    fprintf(stderr,
 		    "\nError: I could not change screen mode into %d x %d.\n",
 		    new_res_x, new_res_y);
-	    screen = oldscreen;
 	}
 	else
 	{
 	    DEBUGMSG(debug_sdl, "T4K_ChangeWindowSize(): Changed window size to %d x %d\n", screen->w, screen->h);
-	    oldscreen = NULL;
 	    win_res_x = screen->w;
 	    win_res_y = screen->h;
 	    if (res_switch_callback)
 		res_switch_callback(win_res_x, win_res_y);
-	    SDL_UpdateRect(screen, 0, 0, 0, 0);
+	    T4K_PresentScreen();
 	}
     }
     else
@@ -553,13 +531,19 @@ void T4K_ChangeWindowSize(int new_res_x, int new_res_y)
 /* switch between fullscreen and windowed mode */
 void T4K_SwitchScreenMode(void)
 {
-    int window = (screen->flags & SDL_FULLSCREEN);
-    SDL_Surface* oldscreen = screen;
+    Uint32 wflags = SDL_GetWindowFlags(sdl_window);
+    bool currently_fullscreen = (wflags & SDL_WINDOW_FULLSCREEN) != 0;
 
-    screen = SDL_SetVideoMode(window ? win_res_x : fs_res_x,
-	    window ? win_res_y : fs_res_y,
-	    PIXEL_BITS,
-	    screen->flags ^ SDL_FULLSCREEN);
+    SDL_SetWindowFullscreen(sdl_window,
+        currently_fullscreen ? 0 : SDL_WINDOW_FULLSCREEN);
+
+    /* Get the new window size and recreate the screen surface */
+    int new_w, new_h;
+    SDL_GetWindowSize(sdl_window, &new_w, &new_h);
+
+    if (screen)
+	SDL_DestroySurface(screen);
+    screen = SDL_CreateSurface(new_w, new_h, SDL_PIXELFORMAT_RGBA32);
 
     if (screen == NULL)
     {
@@ -567,21 +551,18 @@ void T4K_SwitchScreenMode(void)
 		"\nError: I could not switch to %s mode.\n"
 		"The Simple DirectMedia error that occured was:\n"
 		"%s\n\n",
-		window ? "windowed" : "fullscreen",
+		currently_fullscreen ? "windowed" : "fullscreen",
 		SDL_GetError());
-	screen = oldscreen;
     }
     else
     {
-	//success, no need to free the old video surface
-	DEBUGMSG(debug_sdl, "Switched screen mode to %s\n", window ? "windowed" : "fullscreen");
-	oldscreen = NULL;
+	DEBUGMSG(debug_sdl, "Switched screen mode to %s\n", currently_fullscreen ? "windowed" : "fullscreen");
 	if (res_switch_callback)
 	    res_switch_callback(screen->w, screen->h);
 	if (internal_res_switch_callback)
 	    internal_res_switch_callback(screen->w, screen->h);
 
-	SDL_UpdateRect(screen, 0, 0, 0, 0);
+	T4K_PresentScreen();
     }
 }
 
@@ -600,14 +581,14 @@ void T4K_OnResolutionSwitch (ResSwitchCallback callback)
    a single or OR'd combination of event masks.
    e.g. e = T4K_WaitForEvent(SDL_KEYDOWNMASK | SDL_QUITMASK)
    */
-SDL_EventType T4K_WaitForEvent(SDL_EventMask events)
+SDL_EventType T4K_WaitForEvent(Uint32 events)
 {
     SDL_Event evt;
     while (1)
     {
 	while (SDL_PollEvent(&evt) )
 	{
-	    if (SDL_EVENTMASK(evt.type) & events)
+	    if (events == 0 || (evt.type == (SDL_EventType)events))
 		return evt.type;
 	    else
 		SDL_Delay(50);
@@ -645,12 +626,7 @@ SDL_Surface* T4K_zoom(SDL_Surface* src, int new_w, int new_h)
 
     /* Create surface for zoom: */
 
-    s = SDL_CreateRGBSurface(src->flags,        /* SDL_SWSURFACE, */
-	    new_w, new_h, src->format->BitsPerPixel,
-	    src->format->Rmask,
-	    src->format->Gmask,
-	    src->format->Bmask,
-	    src->format->Amask);
+    s = SDL_CreateSurface(new_w, new_h, src->format);
 
     if (s == NULL)
     {
@@ -658,19 +634,17 @@ SDL_Surface* T4K_zoom(SDL_Surface* src, int new_w, int new_h)
 		"The Simple DirectMedia Layer error that occurred was:\n"
 		"%s\n\n", SDL_GetError());
 	return NULL;
-	//    cleanup();
-	//    exit(1);
     }
 
     DEBUGMSG(debug_sdl, "T4K_zoom(): orig surface %dx%d, %d bytes per pixel\n",
-	    src->w, src->h, src->format->BytesPerPixel);
+	    src->w, src->h, SDL_BYTESPERPIXEL(src->format));
     DEBUGMSG(debug_sdl, "T4K_zoom(): new surface %dx%d, %d bytes per pixel\n",
-	    s->w, s->h, s->format->BytesPerPixel);
+	    s->w, s->h, SDL_BYTESPERPIXEL(s->format));
 
     /* Now assign function pointers to correct functions based */
     /* on data format of original and zoomed surfaces:         */
-    getpixel = getpixels[src->format->BytesPerPixel];
-    putpixel = putpixels[s->format->BytesPerPixel];
+    getpixel = getpixels[SDL_BYTESPERPIXEL(src->format)];
+    putpixel = putpixels[SDL_BYTESPERPIXEL(s->format)];
 
     SDL_LockSurface(src);
     SDL_LockSurface(s);
@@ -824,7 +798,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 			T4K_AddRect(&src, &src);
 			T4K_AddRect(&dst, &dst);
 		    }
-		    SDL_Flip(screen);
+		    T4K_PresentScreen();
 		    SDL_Delay(10);
 		}
 
@@ -833,7 +807,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 		src.w = screen->w;
 		src.h = screen->h;
 		SDL_BlitSurface((SDL_Surface*)newbkg, NULL, screen, &src);
-		SDL_Flip(screen);
+		T4K_PresentScreen();
 
 		break;
 	    }
@@ -864,7 +838,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 			T4K_AddRect(&src, &src);
 			T4K_AddRect(&dst, &dst);
 		    }
-		    SDL_Flip(screen);
+		    T4K_PresentScreen();
 		    SDL_Delay(10);
 		}
 
@@ -873,7 +847,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 		src.w = screen->w;
 		src.h = screen->h;
 		SDL_BlitSurface((SDL_Surface*)newbkg, NULL, screen, &src);
-		SDL_Flip(screen);
+		T4K_PresentScreen();
 
 		break;
 	    }
@@ -917,7 +891,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 			T4K_AddRect(&src, &src);
 			T4K_AddRect(&dst, &dst);
 		    }
-		    SDL_Flip(screen);
+		    T4K_PresentScreen();
 		    SDL_Delay(10);
 		}
 
@@ -926,7 +900,7 @@ int T4K_TransWipe(const SDL_Surface* newbkg, WipeStyle type, int segments, int d
 		src.w = screen->w;
 		src.h = screen->h;
 		SDL_BlitSurface((SDL_Surface*)newbkg, NULL, screen, &src);
-		SDL_Flip(screen);
+		T4K_PresentScreen();
 
 		break;
 	    }
@@ -1114,46 +1088,20 @@ void T4K_UpdateScreen(int* frame)
     {
 	if (blits[i].type == 'E')
 	{
-	    //       DEBUGCODE(debug_sdl)
-	    //       {
-	    //         fprintf(stderr, "Erasing blits[%d]\n", i);
-	    //         fprintf(stderr, "srcrect->x = %d\t srcrect->y = %d\t srcrect->w = %d\t srcrect->h = %d\n",
-	    //               blits[i].srcrect->x, blits[i].srcrect->y, blits[i].srcrect->w, blits[i].srcrect->h);
-	    //         fprintf(stderr, "dstrect->x = %d\t dstrect->y = %d\t dstrect->w = %d\t dstrect->h = %d\n",
-	    //               blits[i].dstrect->x, blits[i].dstrect->y, blits[i].dstrect->w, blits[i].dstrect->h);
-	    //       }
-
-	    SDL_LowerBlit(blits[i].src, blits[i].srcrect, screen, blits[i].dstrect);
+	    SDL_BlitSurface(blits[i].src, blits[i].srcrect, screen, blits[i].dstrect);
 	}
     }
-
-    //  SNOW_erase();
 
     /* -- then draw -- */
     for (i = 0; i < numupdates; i++)
     {
 	if (blits[i].type == 'D')
 	{
-	    //       DEBUGCODE(debug_sdl)
-	    //       {
-	    //         fprintf(stderr, "drawing blits[%d]\n", i);
-	    //         fprintf(stderr, "srcrect->x = %d\t srcrect->y = %d\t srcrect->w = %d\t srcrect->h = %d\n",
-	    //               blits[i].srcrect->x, blits[i].srcrect->y, blits[i].srcrect->w, blits[i].srcrect->h);
-	    //         fprintf(stderr, "dstrect->x = %d\t dstrect->y = %d\t dstrect->w = %d\t dstrect->h = %d\n",
-	    //               blits[i].dstrect->x, blits[i].dstrect->y, blits[i].dstrect->w, blits[i].dstrect->h);
-	    //       }
-
 	    SDL_BlitSurface(blits[i].src, blits[i].srcrect, screen, blits[i].dstrect);
 	}
     }
 
-    //  SNOW_draw();
-
-    /* -- update the screen only where we need to! -- */
-    //  if (SNOW_on)
-    //    SDL_UpdateRects(screen, SNOW_add( (SDL_Rect*)&dstupdate, numupdates ), SNOW_rects);
-    //  else
-    SDL_UpdateRects(screen, numupdates, dstupdate);
+    T4K_PresentScreen();
 
     numupdates = 0;
     *frame = *frame + 1;
@@ -1276,7 +1224,7 @@ static int Set_SDL_Pango_Font_Size(int size);
 
 /*-- file-scope variables and local file prototypes for SDL_ttf-based code: */
 #else
-#include "SDL_ttf.h"
+#include <SDL3_ttf/SDL_ttf.h>
 /* We cache fonts here once loaded to improve performance: */
 TTF_Font* font_list[MAX_FONT_SIZE + 1] = {NULL};
 static void free_font_list(void);
@@ -1333,6 +1281,67 @@ void T4K_Cleanup_SDL_Text(void)
 }
 
 
+static SDL_Surface* render_multiline_text(TTF_Font* font, const char* text, SDL_Color color)
+{
+    if (!text || text[0] == '\0') return NULL;
+    if (!strchr(text, '\n'))
+    {
+        return TTF_RenderText_Blended_Wrapped(font, text, 0, color, 0);
+    }
+
+    char* copy = strdup(text);
+    if (!copy) return NULL;
+
+    char* lines[32];
+    int line_count = 0;
+    char* token = strtok(copy, "\n");
+    while (token && line_count < 32)
+    {
+        lines[line_count++] = token;
+        token = strtok(NULL, "\n");
+    }
+
+    SDL_Surface* line_surfs[32];
+    int total_h = 0;
+    int max_w = 0;
+    int line_skip = TTF_GetFontLineSkip(font);
+    if (line_skip <= 0) line_skip = TTF_GetFontSize(font) + 4;
+
+    for (int i = 0; i < line_count; i++)
+    {
+        line_surfs[i] = TTF_RenderText_Blended_Wrapped(font, lines[i], 0, color, 0);
+        if (line_surfs[i])
+        {
+            if (line_surfs[i]->w > max_w) max_w = line_surfs[i]->w;
+            total_h += (i == 0) ? line_surfs[i]->h : line_skip;
+        }
+    }
+
+    if (max_w == 0 || total_h == 0)
+    {
+        free(copy);
+        return NULL;
+    }
+
+    SDL_Surface* result = SDL_CreateSurface(max_w, total_h, SDL_PIXELFORMAT_RGBA32);
+    SDL_FillSurfaceRect(result, NULL, SDL_MapRGBA(result->format, 0, 0, 0, 0));
+
+    int current_y = 0;
+    for (int i = 0; i < line_count; i++)
+    {
+        if (line_surfs[i])
+        {
+            SDL_Rect dst = {0, current_y, line_surfs[i]->w, line_surfs[i]->h};
+            SDL_BlitSurface(line_surfs[i], NULL, result, &dst);
+            current_y += line_skip;
+            SDL_FreeSurface(line_surfs[i]);
+        }
+    }
+
+    free(copy);
+    return result;
+}
+
 /* T4K_BlackOutline() creates a surface containing text of the designated */
 /* foreground color, surrounded by a black shadow, on a transparent    */
 /* background.  The appearance can be tuned by adjusting the number of */
@@ -1384,7 +1393,7 @@ SDL_Surface* T4K_BlackOutline(const char* t, int size, const SDL_Color* c)
     SDLPango_SetText(context, t, -1);
     black_letters = SDLPango_CreateSurfaceDraw(context);
 #else
-    black_letters = TTF_RenderUTF8_Blended(font, t, black);
+    black_letters = render_multiline_text(font, t, black);
 #endif
 
     if (!black_letters)
@@ -1393,14 +1402,10 @@ SDL_Surface* T4K_BlackOutline(const char* t, int size, const SDL_Color* c)
 	return NULL;
     }
 
-    bg = SDL_CreateRGBSurface(SDL_SWSURFACE,
-	    (black_letters->w) + 5,
-	    (black_letters->h) + 5,
-	    32,
-	    rmask, gmask, bmask, amask);
+    bg = SDL_CreateSurface(black_letters->w + 5, black_letters->h + 5, SDL_PIXELFORMAT_RGBA32);
     /* Use color key for eventual transparency: */
     color_key = SDL_MapRGB(bg->format, 30, 30, 30);
-    SDL_FillRect(bg, NULL, color_key);
+    SDL_FillSurfaceRect(bg, NULL, color_key);
 
     /* Now draw black outline/shadow 2 pixels on each side: */
     dstrect.w = black_letters->w;
@@ -1430,7 +1435,7 @@ SDL_Surface* T4K_BlackOutline(const char* t, int size, const SDL_Color* c)
     white_letters = SDLPango_CreateSurfaceDraw(context);
 
 #else
-    white_letters = TTF_RenderUTF8_Blended(font, t, *c);
+    white_letters = render_multiline_text(font, t, *c);
 #endif
 
     if (!white_letters)
@@ -1445,8 +1450,8 @@ SDL_Surface* T4K_BlackOutline(const char* t, int size, const SDL_Color* c)
     SDL_FreeSurface(white_letters);
 
     /* --- Convert to the screen format for quicker blits --- */
-    SDL_SetColorKey(bg, SDL_SRCCOLORKEY|SDL_RLEACCEL, color_key);
-    out = SDL_DisplayFormatAlpha(bg);
+    SDL_SetSurfaceColorKey(bg, true, color_key);
+    out = SDL_ConvertSurface(bg, SDL_PIXELFORMAT_RGBA32);
     SDL_FreeSurface(bg);
 
     DEBUGMSG(debug_sdl, "\nLeaving T4K_BlackOutline(): \n");
@@ -1492,7 +1497,7 @@ SDL_Surface* T4K_SimpleText(const char *t, int size, const SDL_Color* col)
 	TTF_Font* font = get_font(size);
 	if (!font)
 	    return NULL;
-	surf = TTF_RenderUTF8_Blended(font, t, *col);
+	surf = render_multiline_text(font, t, *col);
     }
 #endif
 
@@ -1534,7 +1539,7 @@ int size_text(const char* text, int font_size, int* width, int* height)
     SDL_FreeSurface(temptext);
     return ret;
 #else
-    return TTF_SizeUTF8(get_font(font_size), text, width, height);
+    return TTF_GetStringSize(get_font(font_size), text, 0, width, height) ? 0 : -1;
 #endif
 }
 /* This (fast) function just returns a non-outlined surf */
@@ -1573,19 +1578,19 @@ SDL_Surface* T4K_SimpleTextWithOffset(const char *t, int size, const SDL_Color* 
 	TTF_Font* font = get_font(size);
 	if (!font)
 	    return NULL;
-	surf = TTF_RenderUTF8_Blended(font, t, *col);
+	surf = render_multiline_text(font, t, *col);
 	{
-	    int h;
+	    int minx, maxx, miny, maxy, advance;
 	    int hmax = 0;
 	    int len = strlen(t);
 	    int i;
 	    for (i = 0; i < len; i++)
 	    {
-		TTF_GlyphMetrics(font, t[i], NULL, NULL, NULL, &h, NULL);
-		if (h > hmax)
-		    hmax = h;
+		TTF_GetGlyphMetrics(font, (Uint32)(unsigned char)t[i], &minx, &maxx, &miny, &maxy, &advance);
+		if (maxy > hmax)
+		    hmax = maxy;
 	    }
-	    *glyph_offset = hmax - TTF_FontAscent(font);
+	    *glyph_offset = hmax - TTF_GetFontAscent(font);
 	}
     }
 #endif
@@ -1715,7 +1720,7 @@ static TTF_Font* get_font(int size)
     }
 
     if(font_list[size] == NULL)
-	font_list[size] = load_font(DEFAULT_FONT_NAME, size);
+	font_list[size] = load_font(T4K_AskFontName(), size);
     return font_list[size];
 }
 
@@ -1726,28 +1731,55 @@ static TTF_Font* load_font(const char* font_name, int font_size)
 {
     TTF_Font* f;
     char fontfile[T4K_PATH_MAX];
-    sprintf(fontfile, "%s/fonts/%s", COMMON_DATA_PREFIX, font_name);
+    char relative[T4K_PATH_MAX];
+    const char* resolved;
 
-    f = TTF_OpenFont(fontfile, font_size);
+    if (!font_name || font_name[0] == '\0')
+	font_name = DEFAULT_FONT_NAME;
 
-    /* HACK - better font searching needed! */
-    /* This should mean that font wasn't bundled into data path, which for  */
-    /* now means we are using Debian, so grab from Debian installation loc: */
-    if (!f)
+    /* First try find_file() which searches the app's data prefix: */
+    snprintf(relative, T4K_PATH_MAX, "fonts/%s", font_name);
+    resolved = find_file(relative);
+    if (resolved && resolved[0] != '\0')
     {
-	sprintf(fontfile, "/usr/share/fonts/truetype/ttf-sil-andika/AndikaDesRevG.ttf");
-	f = TTF_OpenFont(fontfile, font_size);
+	f = TTF_OpenFont(resolved, font_size);
+	if (f)
+	{
+	    DEBUGMSG(debug_sdl, "LoadFont(): %s loaded successfully\n\n", resolved);
+	    return f;
+	}
     }
 
+    /* Try t4k_common's own data prefix: */
+    sprintf(fontfile, "%s/fonts/%s", COMMON_DATA_PREFIX, font_name);
+    f = TTF_OpenFont(fontfile, font_size);
+    if (f)
+    {
+	DEBUGMSG(debug_sdl, "LoadFont(): %s loaded successfully\n\n", fontfile);
+	return f;
+    }
+
+    /* Fallback to common Debian system font locations: */
+    sprintf(fontfile, "/usr/share/fonts/truetype/ttf-sil-andika/AndikaDesRevG.ttf");
+    f = TTF_OpenFont(fontfile, font_size);
+    if (!f)
+    {
+	sprintf(fontfile, "/usr/share/fonts/truetype/andika/Andika-Regular.ttf");
+	f = TTF_OpenFont(fontfile, font_size);
+    }
 
     if (f)
     {
 	DEBUGMSG(debug_sdl, "LoadFont(): %s loaded successfully\n\n", fontfile);
 	return f;
     }
+    else if (strcmp(font_name, DEFAULT_FONT_NAME) != 0)
+    {
+	return load_font(DEFAULT_FONT_NAME, font_size);
+    }
     else
     {
-	fprintf(stderr, "LoadFont(): %s NOT loaded successfully.\n", fontfile);
+	fprintf(stderr, "LoadFont(): %s NOT loaded successfully.\n", font_name);
 	return NULL;
     }
 }

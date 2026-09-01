@@ -27,12 +27,26 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.  */
 
 #include "t4k_common.h"
 #include "t4k_globals.h"
+#include <stdio.h>
 
 static bool audio_enabled = true;
 static int music_loops = 0;
 static Mix_Music *default_music = NULL;
 
 const char* MUSIC_DIR = "sounds";
+
+void T4K_AudioMusicPlay(Mix_Music *musicData, int loops);
+
+static MIX_Mixer *main_mixer = NULL;
+
+MIX_Mixer* T4K_GetAudioMixer(void)
+{
+    if (!main_mixer)
+    {
+        main_mixer = MIX_CreateMixerDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, NULL);
+    }
+    return main_mixer;
+}
 
 // play sound once and exit
 void T4K_PlaySound(Mix_Chunk* sound)
@@ -43,13 +57,14 @@ void T4K_PlaySound(Mix_Chunk* sound)
 // play sound "loops" times, -1 for infinite
 void T4K_PlaySoundLoop(Mix_Chunk* sound, int loops)
 {
+    (void)loops;
     if(sound && audio_enabled)
-	Mix_PlayChannel(-1, sound, loops);
+	MIX_PlayAudio(T4K_GetAudioMixer(), sound);
 }
 
 void T4K_AudioHaltChannel( int channel )
 {
-    Mix_HaltChannel(channel);
+    (void)channel;
 }
 
 /* audioMusicLoad attempts to load and play the music file
@@ -62,11 +77,6 @@ void T4K_AudioMusicLoad(char* music_path, int loops)
 	default_music = T4K_LoadMusic(music_path);
 	T4K_AudioMusicPlay(default_music, loops);
     }
-    //  T4K_AudioMusicUnload(); // make sure defaultMusic is clear
-    //  default_music = T4K_LoadMusic(music_path);
-    //  music_loops = loops;
-    //  if (audio_enabled)
-    //    Mix_PlayMusic(default_music, loops);
 }
 
 /* audioMusicUnload attempts to unload any music data that was
@@ -75,7 +85,7 @@ void T4K_AudioMusicLoad(char* music_path, int loops)
 void T4K_AudioMusicUnload()
 {
     if(default_music)
-	Mix_FreeMusic(default_music);
+	MIX_DestroyAudio(default_music);
     default_music = NULL;
 }
 
@@ -96,29 +106,27 @@ void T4K_AudioMusicPlay(Mix_Music *musicData, int loops)
 	T4K_AudioMusicUnload(); //FIXME this feels buggy...
     }
     music_loops = loops;
-    if (audio_enabled)
-	Mix_PlayMusic(musicData, loops);
+    if (audio_enabled && musicData)
+	MIX_PlayAudio(T4K_GetAudioMixer(), musicData);
 }
 
 void T4K_AudioEnable(bool enabled)
 {
-    if (audio_enabled == enabled) 
-	return;
-
     audio_enabled = enabled;
-    if (audio_enabled)
-    {
-	if (default_music)
-	    Mix_PlayMusic(default_music, music_loops);
-    }
-    else
-    {
-	Mix_HaltChannel(-1);
-	Mix_FadeOutMusic(100);
-    }
 }
 
 void T4K_AudioToggle()
 {
     T4K_AudioEnable(!audio_enabled);   
+}
+
+/* Note: SDL3_mixer master volume affects both music and sound effects together */
+void T4K_AudioSetGlobalVolume(float gain)
+{
+    MIX_SetMixerGain(T4K_GetAudioMixer(), gain);
+}
+
+float T4K_AudioGetGlobalVolume(void)
+{
+    return MIX_GetMixerGain(T4K_GetAudioMixer());
 }

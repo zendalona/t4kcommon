@@ -59,9 +59,40 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <wchar.h>
-#include "SDL.h"
-#include "SDL_image.h"
-#include "SDL_mixer.h"
+#include <SDL3/SDL.h>
+#include <SDL3_image/SDL_image.h>
+#include <SDL3_mixer/SDL_mixer.h>
+
+typedef MIX_Audio Mix_Chunk;
+typedef MIX_Audio Mix_Music;
+
+#define Mix_CloseAudio() MIX_Quit()
+
+#ifdef SDL_FreeSurface
+#undef SDL_FreeSurface
+#endif
+#define SDL_FreeSurface(surf) SDL_DestroySurface(surf)
+
+#ifdef SDL_MapRGB
+#undef SDL_MapRGB
+#endif
+#define SDL_MapRGB(fmt, r, g, b) SDL_MapRGB(SDL_GetPixelFormatDetails(fmt), NULL, (r), (g), (b))
+
+#ifdef SDL_MapRGBA
+#undef SDL_MapRGBA
+#endif
+#define SDL_MapRGBA(fmt, r, g, b, a) SDL_MapRGBA(SDL_GetPixelFormatDetails(fmt), NULL, (r), (g), (b), (a))
+
+#ifdef SDL_GetRGB
+#undef SDL_GetRGB
+#endif
+#define SDL_GetRGB(pixel, fmt, r, g, b) SDL_GetRGB((pixel), SDL_GetPixelFormatDetails(fmt), NULL, (r), (g), (b))
+
+#ifdef SDL_GetRGBA
+#undef SDL_GetRGBA
+#endif
+#define SDL_GetRGBA(pixel, fmt, r, g, b, a) SDL_GetRGBA((pixel), SDL_GetPixelFormatDetails(fmt), NULL, (r), (g), (b), (a))
+
 
 //TTS Macros
 #define DEFAULT_VALUE 30
@@ -258,7 +289,7 @@ extern char wrapped_lines[MAX_LINES][MAX_LINEWIDTH]; //!< Global buffer for wrap
 typedef struct
 {
 	int mode;
-	wchar_t text[10000];
+	char text[10000];
 }tts_argument;
 
 
@@ -568,6 +599,45 @@ void T4K_UnloadMenus( void );
 //!     The surface of the screen.
 //!
 SDL_Surface* T4K_GetScreen( void );
+
+//============================================================================== 
+//
+//  T4K_GetWindow
+//
+//! \brief
+//!     Return the SDL_Window created during initialization.
+//!
+//! \return
+//!     The application's SDL_Window pointer.
+//!
+SDL_Window* T4K_GetWindow( void );
+
+//============================================================================== 
+//
+//  T4K_GetRenderer
+//
+//! \brief
+//!     Return the SDL_Renderer created during initialization.
+//!
+//! \return
+//!     The application's SDL_Renderer pointer.
+//!
+SDL_Renderer* T4K_GetRenderer( void );
+
+void T4K_SetWindowAndRenderer( SDL_Window* win, SDL_Renderer* ren );
+
+//============================================================================== 
+//
+//  T4K_PresentScreen
+//
+//! \brief
+//!     Upload the software screen surface to the renderer and present it.
+//!     Replaces SDL_Flip() and SDL_UpdateRect(screen,...) from SDL 1.2.
+//!
+//! \return
+//!     None
+//!
+void T4K_PresentScreen( void );
 
 
 //============================================================================== 
@@ -941,6 +1011,31 @@ typedef void (*ResSwitchCallback)(int resx, int resy);
 void T4K_OnResolutionSwitch( ResSwitchCallback callback );
 
 //==============================================================================
+//
+//  AccessibilityCallback
+//
+//! \brief
+//!     A function to handle an accessibility toggle (TTS or Braille).
+//!
+typedef void (*AccessibilityCallback)(void);
+
+//==============================================================================
+// 
+//  T4K_OnAccessibilityToggle
+//
+//! \brief 
+//!     Register callbacks to handle accessibility keys (F5 for TTS, F9 for Braille).
+//!
+//! \param 
+//!     tts_cb           - A function to be called when F5 is pressed.
+//!     braille_cb       - A function to be called when F9 is pressed.
+//!
+//! \return
+//!     None
+//!
+void T4K_OnAccessibilityToggle( AccessibilityCallback tts_cb, AccessibilityCallback braille_cb );
+
+//==============================================================================
 // 
 //  T4K_WaitForEvent
 //
@@ -954,7 +1049,7 @@ void T4K_OnResolutionSwitch( ResSwitchCallback callback );
 //! \return 
 //!     The event type received.
 //!
-SDL_EventType T4K_WaitForEvent( SDL_EventMask events );
+SDL_EventType T4K_WaitForEvent( Uint32 event_type_mask );
 
 //==============================================================================
 //
@@ -1837,6 +1932,9 @@ void T4K_AudioEnable( bool enabled );
 //!     None
 //!
 void T4K_AudioToggle( void );
+void T4K_AudioSetGlobalVolume( float gain );
+float T4K_AudioGetGlobalVolume( void );
+MIX_Mixer* T4K_GetAudioMixer( void );
 
 
 //=============================================================================
