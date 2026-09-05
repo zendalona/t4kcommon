@@ -2,7 +2,7 @@
 #other CMakeLists.txt and is not safe for human consumption. 
 #Please hack responsibly.
 
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 3.5)
 
 set(PACKAGE_NAME "Tux4Kids_common")
 set(PACKAGE_VERSION 1.0.0)
@@ -71,6 +71,10 @@ elseif(UNIX)
 	${CMAKE_INSTALL_PREFIX}/share/${LIB_NAME})
 elseif(WIN32)
     t4k_to_unix_path(DATA_PREFIX "\$ENV{APPDATA}/${PACKAGE_NAME}")
+    # Activate existing MinGW-specific code paths (e.g. single-arg mkdir)
+    if(MINGW)
+        add_definitions(-DBUILD_MINGW32)
+    endif()
 else()
     message(SEND_ERROR "What OS are you on?")
 endif()

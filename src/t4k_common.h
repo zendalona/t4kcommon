@@ -297,6 +297,7 @@ typedef struct
 //                  Public Definitions in t4k_tts.c
 //==============================================================================
 int T4K_Tts_init();
+void T4K_Tts_set_status(int status);
 int T4K_Tts_set_voice(char voice_name[]);
 void T4K_Tts_set_volume(int volume);
 void T4K_Tts_set_rate(int rate);
@@ -625,6 +626,7 @@ SDL_Window* T4K_GetWindow( void );
 SDL_Renderer* T4K_GetRenderer( void );
 
 void T4K_SetWindowAndRenderer( SDL_Window* win, SDL_Renderer* ren );
+void T4K_SetScreen( SDL_Surface* s );
 
 //============================================================================== 
 //
@@ -986,6 +988,7 @@ void T4K_ChangeWindowSize( int new_res_x,
 //!     None
 //!
 void T4K_SwitchScreenMode( void );
+void T4K_UpdateScreenSize( void );
 
 //==============================================================================
 //
